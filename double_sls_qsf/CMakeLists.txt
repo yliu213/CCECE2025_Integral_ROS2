@@ -20,10 +20,12 @@ find_package(px4_ros_com REQUIRED)
 add_executable(sls_qsf 
   src/main_node.cpp
   # for MATLAB generated code
-  src/QSFGeometricController/QSFGeometricController.cpp
-  src/QSFGeometricController/rt_nonfinite.cpp
-  src/QSFGeometricController/rtGetInf.cpp
-  src/QSFGeometricController/rtGetNaN.cpp
+  src/QSFController/QSFController.cpp
+  src/QSFController/rt_nonfinite.cpp
+  src/QSFController/rtGetInf.cpp
+  src/QSFController/rtGetNaN.cpp
+
+  src/QSFIntegralController/QSFIntegralController.cpp
   # for inner loop controller
   src/nonlinear_attitude_control.cpp
 )

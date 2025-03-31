@@ -23,7 +23,10 @@
 #include "double_sls_qsf/LowPassFilter.hpp"
 #include "controller_msgs/msg/sls_state.hpp"
 #include "controller_msgs/msg/sls_force.hpp"
-#include "double_sls_qsf/QSFGeometricController.h"
+#include "controller_msgs/msg/att_sp.hpp"
+#include "controller_msgs/msg/rate_sp.hpp"
+#include "double_sls_qsf/QSFController.h" // generated MATLAB code
+#include "double_sls_qsf/QSFIntegralController.h" // generated MATLAB code
 #include "double_sls_qsf/nonlinear_attitude_control.h"
 
 using namespace std::chrono;
@@ -52,11 +55,13 @@ public:
         ctrl_enabled_ = this->declare_parameter<bool>("ctrl_enabled_", false);
         rate_ctrl_enabled_ = this->declare_parameter<bool>("rate_ctrl_enabled_", true);
         mission_enabled_ = this->declare_parameter<bool>("mission_enabled_", false);
+        integrator_enabled_ = this->declare_parameter<bool>("integrator_enabled_", false);
 
 		// Physical Parameters
 		mass_ = this->declare_parameter<double>("mass_", 1.56);
 		cable_length_ = this->declare_parameter<double>("cable_length_", 0.85);
     	load_mass_ = this->declare_parameter<double>("load_mass_", 0.25);
+        use_real_pend_angle_ = this->declare_parameter<bool>("use_real_pend_angle_", false);
 
         // Initial Positions
         pos_x_0_ = this->declare_parameter<double>("pos_x_0_", 0.0);
@@ -77,7 +82,21 @@ public:
 		Kjer_y_ = this->declare_parameter<double>("Kjer_y_", 0.0);
 		Kjer_z_ = this->declare_parameter<double>("Kjer_z_", 0.0); 
 
+        // Integrator gains
+        Kint_x_ = this->declare_parameter<double>("Kint_x_", 12);
+        Kint_y_ = this->declare_parameter<double>("Kint_y_", 12);
+        Kint_z_ = this->declare_parameter<double>("Kint_z_", 1);
+        integral_limit_ = this->declare_parameter<double>("integral_limit_", 10);
+
+        // limit
+        ref_rate_limit_ = this->declare_parameter<double>("ref_rate_limit_", 1);
+        err_pose_limit_vertical_ = this->declare_parameter<double>("err_pose_limit_vertical_", 0.2);
+        err_pose_limit_horizontal_ = this->declare_parameter<double>("err_pose_limit_horizontal_", 0.2);
+
         // Mission Setpoints
+        c_x_0_ = this->declare_parameter<double>("c_x_0_", 0.0);
+        c_y_0_ = this->declare_parameter<double>("c_y_0_", 0.0);
+        c_z_0_ = this->declare_parameter<double>("c_z_0_", 1.0);
         c_x_1_ = this->declare_parameter<double>("c_x_1_", 0.0);
         c_y_1_ = this->declare_parameter<double>("c_y_1_", 0.0);
         c_z_1_ = this->declare_parameter<double>("c_z_1_", 1.0);
@@ -129,23 +148,49 @@ public:
 		double mav_vel_q = this->declare_parameter<double>("mav_vel_q", 0.625);
 		bool mav_vel_verbose = this->declare_parameter<bool>("mav_vel_verbose", false);
 		vel_filter_ = std::make_unique<SecondOrderFilter<Eigen::Vector3d>>(mav_vel_cutoff_freq, mav_vel_q, mav_vel_verbose);
+
+        double pend_angle_cutoff_freq = this->declare_parameter<double>("pend_angle_cutoff_freq", 30);
+        double pend_angle_q = this->declare_parameter<double>("pend_angle_q", 0.625);
+        bool pend_angle_verbose = this->declare_parameter<bool>("pend_angle_verbose", false);
+        pend_angle_filter_ = std::make_unique<SecondOrderFilter<Eigen::Vector3d>>(pend_angle_cutoff_freq, pend_angle_q, pend_angle_verbose);
 	
-		// publishers
+        double load_acc_cutoff_freq = this->declare_parameter<double>("load_acc_cutoff_freq", 30);
+        double load_acc_q = this->declare_parameter<double>("load_acc_q", 0.625);
+        bool load_acc_verbose = this->declare_parameter<bool>("load_acc_verbose", false);
+        load_acc_filter_ = std::make_unique<SecondOrderFilter<Eigen::Vector3d>>(load_acc_cutoff_freq, load_acc_q, load_acc_verbose);
+
+        double pend_angular_acc_cutoff_freq = this->declare_parameter<double>("pend_angular_acc_cutoff_freq", 30);
+        double pend_angular_acc_q = this->declare_parameter<double>("pend_angular_acc_q", 0.625);
+        bool pend_angular_acc_verbose = this->declare_parameter<bool>("pend_angular_acc_verbose", false);
+        pend_angular_acc_filter_ = std::make_unique<SecondOrderFilter<Eigen::Vector3d>>(pend_angular_acc_cutoff_freq, pend_angular_acc_q, pend_angular_acc_verbose);
+
+        double pend_rate_cutoff_freq = this->declare_parameter<double>("pend_rate_cutoff_freq", 30);
+        double pend_rate_q = this->declare_parameter<double>("pend_rate_q", 0.625);
+        bool pend_rate_verbose = this->declare_parameter<bool>("pend_rate_verbose", false);
+        pend_rate_filter_ = std::make_unique<SecondOrderFilter<Eigen::Vector3d>>(pend_rate_cutoff_freq, pend_rate_q, pend_rate_verbose);
+
+		// px4 publishers
 		// see .msg files for message type definitions
 		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
 		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 		vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
-        attitude_setpoint_publisher_ = this->create_publisher<VehicleAttitudeSetpoint>("/fmu/in/vehicle_attitude_setpoint", 10); // for attitude control
-        rate_setpoint_publisher_ = this->create_publisher<VehicleRatesSetpoint>("/fmu/in/vehicle_rates_setpoint", 10); // for rate control
+        attitude_setpoint_publisher_ = this->create_publisher<VehicleAttitudeSetpoint>("/fmu/in/vehicle_attitude_setpoint", 10); 
+        rate_setpoint_publisher_ = this->create_publisher<VehicleRatesSetpoint>("/fmu/in/vehicle_rates_setpoint", 10); 
         //thrust_setpoint_publisher_ = this->create_publisher<VehicleThrustSetpoint>("/fmu/in/vehicle_thrust_setpoint", 10); // for thrust control
 
+        // custom msgs publishers
 		sls_state_raw_pub_ = this->create_publisher<SlsState> ("SLS_QSF_controller/sls_state_raw", 1);
 		sls_state_pub_ = this->create_publisher<SlsState> ("SLS_QSF_controller/sls_state", 1);
 		sls_force_pub_ = this->create_publisher<SlsForce> ("SLS_QSF_controller/sls_force", 1);
+        att_sp_pub_ = this->create_publisher<AttSP>("/SLS_QSF_controller/att_sp", 10);
+        rates_sp_pub_ = this->create_publisher<RateSP>("/SLS_QSF_controller/rate_sp", 10);
 
         // debug publisher
         rate_setpoint_debug_publisher_ = this->create_publisher<VehicleRatesSetpoint>("/SLS_QSF_controller/debug_rate_sp", 10);
         attitude_setpoint_debug_publisher_ = this->create_publisher<VehicleAttitudeSetpoint>("/SLS_QSF_controller/debug_att_sp", 10);
+
+        // other publishers
+        mav_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("mrotor_controller/mav_vel", 10);
 
 		// subscribers
 		gazebo_link_state_sub_ = this->create_subscription<gazebo_msgs::msg::LinkStates>("/gazebo/link_states",1000,std::bind(&SLSQSF::gazeboLinkStateCb, this, _1));
@@ -203,14 +248,13 @@ public:
                 if (is_armed_) {
                     auto now = this->get_clock()->now();
                     double elapsed = (now - armed_time_).seconds();
-                    if (elapsed > 7.0) {
-                        RCLCPP_INFO(this->get_logger(), "7s after arming, switching to SLS controller");
+                    if (elapsed > 9.0) {
+                        RCLCPP_INFO(this->get_logger(), "9s after arming, switching to SLS controller");
                         phase_ = ControllerPhase::SLS_ENABLED;
                     }
                 }
                 break;
             }
-
             case ControllerPhase::SLS_ENABLED:
             {
                 // Switch to body_rate offboard mode
@@ -224,7 +268,6 @@ public:
                 mode_msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
                 offboard_control_mode_publisher_->publish(mode_msg);
                 this-> test = true;
-                
                 break;
             }
             }
@@ -240,23 +283,161 @@ public:
               result.successful = true;
               for (auto & param : params) {
                 if (param.get_name() == "rate_ctrl_enabled_") {
-                  rate_ctrl_enabled_ = param.as_bool();
-                  RCLCPP_INFO(this->get_logger(), "Param changed: rate_ctrl_enabled=%s", rate_ctrl_enabled_ ? "true" : "false");
+                    rate_ctrl_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: rate_ctrl_enabled=%s", rate_ctrl_enabled_ ? "true" : "false");
                 } else if (param.get_name() == "mission_enabled_") {
-                  mission_enabled_ = param.as_bool();
-                  RCLCPP_INFO(this->get_logger(), "Param changed: mission_enabled=%s", mission_enabled_ ? "true" : "false");     
+                    mission_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: mission_enabled=%s", mission_enabled_ ? "true" : "false");     
                 } else if (param.get_name() == "ctrl_enabled_"){
-                  ctrl_enabled_ = param.as_bool();
-                  RCLCPP_INFO(this->get_logger(), "Param changed: ctrl_enabled=%s", ctrl_enabled_ ? "true" : "false");
+                    ctrl_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: ctrl_enabled=%s", ctrl_enabled_ ? "true" : "false");
                 } else if (param.get_name() == "traj_tracking_enabled_"){
-                  traj_tracking_enabled_ = param.as_bool();
-                  RCLCPP_INFO(this->get_logger(), "Param changed: traj_tracking_enabled_=%s", traj_tracking_enabled_ ? "true" : "false");
-                } else{}
+                    traj_tracking_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: traj_tracking_enabled_=%s", traj_tracking_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "traj_tracking_enabled_"){
+                    traj_tracking_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: traj_tracking_enabled_=%s", traj_tracking_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "drag_comp_enabled_"){
+                    drag_comp_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: drag_comp_enabled_=%s", drag_comp_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "lpf_enabled_"){
+                    lpf_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: lpf_enabled_=%s", lpf_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "integrator_enabled_"){
+                    integrator_enabled_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: integrator_enabled_=%s", integrator_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "Kint_x_"){
+                    Kint_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kint_x_=%f", Kint_x_);
+                } else if (param.get_name() == "Kint_y_"){
+                    Kint_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kint_y_=%f", Kint_y_);
+                } else if (param.get_name() == "Kint_z_"){
+                    Kint_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kint_z_=%f", Kint_z_);
+                } else if (param.get_name() == "Kpos_x_"){
+                    Kpos_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kpos_x_=%f", Kpos_x_);
+                } else if (param.get_name() == "Kpos_y_"){
+                    Kpos_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kpos_y_=%f", Kpos_y_);
+                } else if (param.get_name() == "Kpos_z_"){
+                    Kpos_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kpos_z_=%f", Kpos_z_);
+                } else if (param.get_name() == "Kvel_x_"){
+                    Kvel_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kvel_x_=%f", Kvel_x_);
+                } else if (param.get_name() == "Kvel_y_"){
+                    Kvel_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kvel_y_=%f", Kvel_y_);
+                } else if (param.get_name() == "Kvel_z_"){
+                    Kvel_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kvel_z_=%f", Kvel_z_);
+                } else if (param.get_name() == "Kacc_x_"){
+                    Kacc_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kacc_x_=%f", Kacc_x_);
+                } else if (param.get_name() == "Kacc_y_"){
+                    Kacc_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kacc_y_=%f", Kacc_y_);
+                } else if (param.get_name() == "Kacc_z_"){
+                    Kacc_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kacc_z_=%f", Kacc_z_);
+                } else if (param.get_name() == "Kjer_x_"){
+                    Kjer_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kjer_x_=%f", Kjer_x_);
+                } else if (param.get_name() == "Kjer_y_"){
+                    Kjer_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kjer_y_=%f", Kjer_y_);
+                } else if (param.get_name() == "Kjer_z_"){
+                    Kjer_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: Kjer_z_=%f", Kjer_z_);
+                } else if (param.get_name() == "c_x_"){
+                    c_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_x_=%f", c_x_);
+                } else if (param.get_name() == "c_y_"){
+                    c_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_y_=%f", c_y_);
+                } else if (param.get_name() == "c_z_"){
+                    c_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_z_=%f", c_z_);
+                } else if (param.get_name() == "r_x_"){
+                    r_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: r_x_=%f", r_x_);
+                } else if (param.get_name() == "r_y_"){
+                    r_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: r_y_=%f", r_y_);
+                } else if (param.get_name() == "r_z_"){
+                    r_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: r_z_=%f", r_z_);
+                } else if (param.get_name() == "fr_x_"){
+                    fr_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: fr_x_=%f", fr_x_);
+                } else if (param.get_name() == "fr_y_z"){
+                    fr_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: fr_y_=%f", fr_y_);
+                } else if (param.get_name() == "fr_z_"){
+                    fr_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: fr_z_=%f", fr_z_);
+                } else if (param.get_name() == "ph_x_"){
+                    ph_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: ph_x_=%f", ph_x_);
+                } else if (param.get_name() == "ph_y_"){
+                    ph_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: ph_y_=%f", ph_y_);
+                } else if (param.get_name() == "ph_z_"){
+                    ph_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: ph_z_=%f", ph_z_);
+                } else if (param.get_name() == "c_x_1_"){
+                    c_x_1_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_x_1_=%f", c_x_1_);
+                } else if (param.get_name() == "c_y_1_"){
+                    c_y_1_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_y_1_=%f", c_y_1_);
+                } else if (param.get_name() == "c_z_1_"){
+                    c_z_1_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_z_1_=%f", c_z_1_);
+                } else if (param.get_name() == "c_x_2_"){
+                    c_x_2_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_x_2_=%f", c_x_2_);
+                } else if (param.get_name() == "c_y_2_"){
+                    c_y_2_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_y_2_=%f", c_y_2_);
+                } else if (param.get_name() == "c_z_2_"){
+                    c_z_2_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_z_2_=%f", c_z_2_);
+                } else if (param.get_name() == "c_x_3_"){
+                    c_x_3_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_x_3_=%f", c_x_3_);
+                } else if (param.get_name() == "c_y_3_"){
+                    c_y_3_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_y_3_=%f", c_y_3_);
+                } else if (param.get_name() == "c_z_3_"){
+                    c_z_3_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: c_z_3_=%f", c_z_3_);
+                } else if (param.get_name() == "rotorDragD_x_" ){
+                    rotorDragD_x_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: rotorDragD_x_=%f", rotorDragD_x_);
+                } else if (param.get_name() == "rotorDragD_y_" ){
+                    rotorDragD_y_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: rotorDragD_y_=%f", rotorDragD_y_);
+                } else if (param.get_name() == "rotorDragD_z_" ){
+                    rotorDragD_z_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: rotorDragD_z_=%f", rotorDragD_z_);
+                } else if (param.get_name() == "norm_thrust_const_" ){
+                    norm_thrust_const_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: norm_thrust_const_=%f", norm_thrust_const_);
+                } else if (param.get_name() == "norm_thrust_offset_" ){
+                    norm_thrust_offset_ = param.as_double();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: norm_thrust_offset_=%f", norm_thrust_offset_);
+                } else {
+                    result.successful = false;
+                }
+                Kpos_ << -Kpos_x_, -Kpos_y_, -Kpos_z_;
+                Kvel_ << -Kvel_x_, -Kvel_y_, -Kvel_z_;  
               }
               return result;
             }
         );          
-          
 		timer_ = this->create_wall_timer(50ms, timer_callback); // 20Hz
 	}
 
@@ -271,10 +452,13 @@ private:
 	rclcpp::Publisher<SlsState>::SharedPtr sls_state_raw_pub_;
 	rclcpp::Publisher<SlsState>::SharedPtr sls_state_pub_;
 	rclcpp::Publisher<SlsForce>::SharedPtr sls_force_pub_;
+    rclcpp::Publisher<AttSP>::SharedPtr att_sp_pub_;
+    rclcpp::Publisher<RateSP>::SharedPtr rates_sp_pub_; 
     rclcpp::Publisher<VehicleAttitudeSetpoint>::SharedPtr attitude_setpoint_publisher_; // for attitude control
     rclcpp::Publisher<VehicleRatesSetpoint>::SharedPtr rate_setpoint_publisher_; // for rate control
     rclcpp::Publisher<VehicleRatesSetpoint>::SharedPtr rate_setpoint_debug_publisher_; // for debug
     rclcpp::Publisher<VehicleAttitudeSetpoint>::SharedPtr attitude_setpoint_debug_publisher_; // for debug
+    rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr mav_vel_pub_; // for mav velocity
     //rclcpp::Publisher<VehicleThrustSetpoint>::SharedPtr thrust_setpoint_publisher_; // for thrust control
 
 	// subscribers
@@ -300,6 +484,10 @@ private:
 	// LPFS
 	std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> load_vel_filter_;
 	std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> vel_filter_;
+    std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> pend_angle_filter_;
+    std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> load_acc_filter_;
+    std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> pend_angular_acc_filter_;
+    std::unique_ptr<SecondOrderFilter<Eigen::Vector3d>> pend_rate_filter_;
 
 	// bools
 	bool gazebo_link_name_matched_ = false;  // gazebo link indices
@@ -312,6 +500,8 @@ private:
     bool ctrl_enabled_;
     bool rate_ctrl_enabled_; // flag for rate control
     bool mission_initialized_ = false;
+    bool use_real_pend_angle_;
+    bool integrator_enabled_ = false;
 
 	// ints
 	uint64_t offboard_setpoint_counter_;
@@ -323,7 +513,10 @@ private:
 	// doubles
 	double diff_t_; // time difference
 	double Kpos_x_, Kpos_y_, Kpos_z_, Kvel_x_, Kvel_y_, Kvel_z_, Kacc_x_, Kacc_y_, Kacc_z_, Kjer_x_, Kjer_y_, Kjer_z_; // controller gains
-	double load_mass_, cable_length_, mass_, max_fb_acc_;
+    double Kint_x_, Kint_y_, Kint_z_;
+    double integral_limit_, err_pose_limit_vertical_, err_pose_limit_horizontal_;
+    double ref_rate_limit_;
+    double load_mass_, cable_length_, mass_, max_fb_acc_;
 	double gravity_acc_ = 9.80665;
 
 	double c_x_, c_y_, c_z_;    
@@ -332,6 +525,7 @@ private:
 	double ph_x_, ph_y_, ph_z_; // reference trajectory parameters
 
     // mission setpoints
+    double c_x_0_, c_y_0_, c_z_0_;
     double c_x_1_, c_y_1_, c_z_1_;
     double c_x_2_, c_y_2_, c_z_2_;
     double c_x_3_, c_y_3_, c_z_3_;
@@ -341,6 +535,9 @@ private:
     double norm_thrust_const_, norm_thrust_offset_; // throttle normalization
     double attctrl_tau; // not defined in class in ros1 repo
     double rotorDragD_x_, rotorDragD_y_, rotorDragD_z_;
+
+    double ref_x_[5], ref_y_[5], ref_z_[5];
+    double xi_[3] = {0, 0, 0};
 
 	// vectors
 	Eigen::Vector3d Pos_, loadPos_, pendAngle_; // positon
@@ -364,10 +561,11 @@ private:
 
     Eigen::Vector3d gravity_{Eigen::Vector3d(0.0, 0.0, -9.80665)};
 
-	// controller msgs
+	// msgs
 	SlsState sls_state_raw_; 
     SlsState sls_state_; 
     SlsForce sls_force_; 
+    geometry_msgs::msg::TwistStamped mav_vel_;
 
 	// characters
 	const char* gazebo_link_name_[1] = {
@@ -383,7 +581,6 @@ private:
 	void applyIteration(void);
 	void loadSlsState();
 	void exeControl(void);
-	Eigen::Vector3d applyQuasiSlsCtrl();
     Eigen::Vector3d compensateRotorDrag(double t);
     Eigen::Vector3d transformPose(Eigen::Vector3d oldPose, Eigen::Vector3d offsetVector);
     Eigen::Vector4d acc2quaternion(const Eigen::Vector3d &vector_acc, const double &yaw);
@@ -392,6 +589,11 @@ private:
     void updateReference();
     void checkMissionStage(double mission_time_span);
     void debugRateCommands(const Eigen::Vector4d &cmd, const Eigen::Vector4d &target_attitude);
+    Eigen::Vector3d applyQSFCtrl(void);
+    Eigen::Vector3d applyQSFIntegralCtrl(void);
+    void clipBodyRateCmd(Eigen::Vector4d &bodyrate_cmd);
+    void updateRefStatic(double x, double y, double z);
+    void updateRefSinusoidal(double t);
 };
 
 void SLSQSF::arm()
@@ -427,7 +629,7 @@ void SLSQSF::publish_trajectory_setpoint()
 	TrajectorySetpoint msg{};
 	//msg.position = {0.0, -1.0, -1.0}; // gazebo: x:-1, y:0, z:1
     //msg.position = {-1.0, 0.0, -1.0}; // gazebo: x:0, y:-1, z:1
-    msg.position = {0.0, 0.0, -1.0};
+    msg.position = {0.0, 0.0, -1.85};
 	// msg.yaw = 3.14159265358979323846/2; 
     msg.yaw = 0.0; 
 	msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
@@ -485,7 +687,8 @@ void SLSQSF::gazeboLinkStateCb(const gazebo_msgs::msg::LinkStates::SharedPtr msg
         Att_(2) = msg -> pose[drone_link_index_].orientation.y;
         Att_(3) = msg -> pose[drone_link_index_].orientation.z;    // orientation in quaternion form
         // Load 
-        loadPos_ = toEigen(msg -> pose[10].position);  
+        loadPos_ = toEigen(msg -> pose[10].position);
+        //RCLCPP_INFO(this->get_logger(), "loadPos_=%f, %f, %f", loadPos_(0), loadPos_(1), loadPos_(2));  
         // Pendulum
         pendAngle_ = loadPos_ - Pos_;
         pendAngle_ = pendAngle_ / pendAngle_.norm();
@@ -506,7 +709,6 @@ void SLSQSF::gazeboLinkStateCb(const gazebo_msgs::msg::LinkStates::SharedPtr msg
 }
 
 void SLSQSF::exeControl(void){
-        //RCLCPP_INFO(this->get_logger(),"SLS Control EXE");
         if(init_complete_){
             if(traj_tracking_enabled_ && !traj_tracking_enabled_last_) {
                 traj_tracking_last_called_ = this->get_clock()->now();
@@ -514,8 +716,18 @@ void SLSQSF::exeControl(void){
             traj_tracking_enabled_last_ = traj_tracking_enabled_;
 
             Eigen::Vector3d desired_acc;
-            desired_acc = applyQuasiSlsCtrl();
+            if(!integrator_enabled_) {
+                desired_acc = applyQSFCtrl(); 
+                for(int i=0; i<3; i++){
+                    xi_[i] = 0;  
+                }
+            }
+            else {
+                desired_acc = applyQSFIntegralCtrl(); 
+            }
+
             computeBodyRateCmd(cmdBodyRate_, desired_acc);
+            clipBodyRateCmd(cmdBodyRate_);
             if(ctrl_enabled_ && this-> test){
                 pubRateCommands(cmdBodyRate_, q_des_); 
             }
@@ -527,15 +739,177 @@ void SLSQSF::exeControl(void){
         }
 }
 
-void SLSQSF::updateReference(){
-    double t = this->get_clock()->now().seconds();
-    double sp_x = c_x_ + r_x_ * std::sin(fr_x_ * t + ph_x_);
-    double sp_y = c_y_ + r_y_ * std::sin(fr_y_ * t + ph_y_);
-    double sp_z = c_z_ + r_z_ * std::sin(fr_z_ * t + ph_z_);
-    double sp_x_dt = r_x_ * fr_x_ * std::cos(fr_x_ * t + ph_x_);
-    double sp_y_dt = r_y_ * fr_y_ * std::cos(fr_y_ * t + ph_y_);
-    double sp_z_dt = r_z_ * fr_z_ * std::cos(fr_z_ * t + ph_z_);
+void SLSQSF::clipBodyRateCmd(Eigen::Vector4d &bodyrate_cmd){
+    for(int i=0;i<3;i++) {
+        if(std::abs(bodyrate_cmd(i)) > ref_rate_limit_) {
+            bodyrate_cmd(i) = std::copysign(ref_rate_limit_, bodyrate_cmd(i));
+        }
+    }
+}
 
+Eigen::Vector3d SLSQSF::applyQSFIntegralCtrl(void){
+    const double t = this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds();
+    double target_force_ned[3];
+    const double K[13] = {Kint_x_, Kpos_x_, Kvel_x_, Kacc_x_, Kjer_x_, Kint_y_, Kpos_y_, Kvel_y_, Kacc_y_, Kjer_y_, Kint_z_, Kpos_z_, Kvel_z_};
+    const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
+
+    double sls_state_array[15];
+    for(int i=0; i<12;i++){
+       sls_state_array[i] = sls_state_.sls_state[i];
+    }
+    for(int i=12; i<15; i++){
+        sls_state_array[i] = xi_[i-12];
+    }
+
+    double ref_x[5];
+    double ref_y[5];
+    double ref_z[5];
+    for(int i = 0; i < 5; i++) {
+        ref_x[i] = ref_y_[i];
+        ref_y[i] = ref_x_[i];
+        ref_z[i] = -ref_z_[i];
+    }
+    double xi_dot[3];
+    QSFIntegralController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned, xi_dot);
+
+    double load_pose[3] = {sls_state_array[0], sls_state_array[1], sls_state_array[2]};
+    double load_pose_ref[3] = {ref_x[0], ref_y[0], ref_z[0]};
+
+    RCLCPP_INFO(this->get_logger(), "integral_limit: %f", integral_limit_);
+    RCLCPP_INFO(this->get_logger(), "xi0: %f", xi_[0]);
+    RCLCPP_INFO(this->get_logger(), "xi1: %f", xi_[1]);
+    RCLCPP_INFO(this->get_logger(), "xi2: %f", xi_[2]);
+    for(int i=0; i<3; i++) {
+        RCLCPP_INFO(this->get_logger(), "err: %f", std::abs(load_pose[i] - load_pose_ref[i]));
+        if(std::abs(xi_[i] + xi_dot[i] * diff_t_) <= integral_limit_){
+            xi_[i] +=  xi_dot[i] * diff_t_;
+        }
+    }
+
+    sls_force_.header.stamp = this->get_clock()->now();
+    sls_force_.sls_force[0] = target_force_ned[0];
+    sls_force_.sls_force[1] = target_force_ned[1];
+    sls_force_.sls_force[2] = target_force_ned[2];
+    sls_force_pub_->publish(sls_force_);
+
+    Eigen::Vector3d a_des;
+    a_des(0) = target_force_ned[1] / mass_;
+    a_des(1) = target_force_ned[0] / mass_;
+    a_des(2) = -target_force_ned[2] / mass_;
+
+    Eigen::Vector3d a_fb = a_des + gravity_;
+
+    if (a_fb.norm() > max_fb_acc_)
+    a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb;
+
+    // rotor drag compensation
+    Eigen::Vector3d a_rd;
+    if(drag_comp_enabled_) {
+        a_rd = compensateRotorDrag(t);
+    }
+    else {
+        a_rd = Eigen::Vector3d::Zero();
+    } 
+
+    a_des = a_fb - a_rd - gravity_;
+    
+    return a_des;
+}
+
+Eigen::Vector3d SLSQSF::applyQSFCtrl(void){
+    const double t = this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds();
+    double target_force_ned[3];
+    const double K[10] = {Kpos_x_, Kvel_x_, Kacc_x_, Kjer_x_, Kpos_y_, Kvel_y_, Kacc_y_, Kjer_y_, Kpos_z_, Kvel_z_};
+    const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
+
+    double sls_state_array[12];
+    for(int i=0; i<12;i++){
+       sls_state_array[i] = sls_state_.sls_state[i];
+    }
+
+    double ref_x[5];
+    double ref_y[5];
+    double ref_z[5];
+    for(int i = 0; i< 5; i++) {
+        ref_x[i] = ref_y_[i];
+        ref_y[i] = ref_x_[i];
+        ref_z[i] = -ref_z_[i];
+    }
+    double xi_dot[3];
+    QSFController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned);  
+
+    sls_force_.header.stamp = this->get_clock()->now();
+    sls_force_.sls_force[0] = target_force_ned[0];
+    sls_force_.sls_force[1] = target_force_ned[1];
+    sls_force_.sls_force[2] = target_force_ned[2];
+    sls_force_pub_->publish(sls_force_);
+
+    Eigen::Vector3d a_des;
+    a_des(0) = target_force_ned[1] / mass_;
+    a_des(1) = target_force_ned[0] / mass_;
+    a_des(2) = -target_force_ned[2] / mass_;
+
+    Eigen::Vector3d a_fb = a_des + gravity_;
+
+    if (a_fb.norm() > max_fb_acc_)
+    a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb;
+
+    // rotor drag compensation
+    Eigen::Vector3d a_rd;
+    if(drag_comp_enabled_) {
+        a_rd = compensateRotorDrag(t);
+    }
+    else {
+        a_rd = Eigen::Vector3d::Zero();
+    } 
+
+    a_des = a_fb - a_rd - gravity_;
+    
+    return a_des;
+}
+
+void SLSQSF::updateRefStatic(double x, double y, double z){
+    if(std::abs(x - loadPos_(0)) > err_pose_limit_horizontal_){
+        x = std::copysign(err_pose_limit_horizontal_, x - loadPos_(0)) + loadPos_(0);
+    }
+
+    if(std::abs(y - loadPos_(1)) > err_pose_limit_horizontal_){
+        y = std::copysign(err_pose_limit_horizontal_, y - loadPos_(1)) + loadPos_(1);
+    }
+
+    if(std::abs(z - loadPos_(2)) > err_pose_limit_vertical_){
+        z = std::copysign(err_pose_limit_vertical_, z - loadPos_(2)) + loadPos_(2);
+    }
+    
+    for(int i = 0; i < 5; i++){
+        ref_x_[i] = 0;
+        ref_y_[i] = 0;
+        ref_z_[i] = 0;
+    }
+    ref_x_[0] = x;
+    ref_y_[0] = y;
+    ref_z_[0] = z;
+}
+
+void SLSQSF::updateRefSinusoidal(double t){
+    ref_x_[0] = c_x_ + r_x_ * std::sin(fr_x_ * t + ph_x_);
+    ref_y_[0] = c_y_ + r_y_ * std::sin(fr_y_ * t + ph_y_);
+    ref_z_[0] = c_z_ + r_z_ * std::sin(fr_z_ * t + ph_z_);
+    ref_x_[1] = r_x_ * fr_x_ * std::cos(fr_x_ * t + ph_x_);
+    ref_y_[1] = r_y_ * fr_y_ * std::cos(fr_y_ * t + ph_y_);
+    ref_z_[1] = r_z_ * fr_z_ * std::cos(fr_z_ * t + ph_z_);
+    ref_x_[2] = -r_x_ * fr_x_ * fr_x_ * std::sin(fr_x_ * t + ph_x_);
+    ref_y_[2] = -r_y_ * fr_y_ * fr_y_ * std::sin(fr_y_ * t + ph_y_);
+    ref_z_[2] = -r_z_ * fr_z_ * fr_z_ * std::sin(fr_z_ * t + ph_z_);
+    ref_x_[3] = -r_x_ * fr_x_ * fr_x_ * fr_x_ * std::cos(fr_x_ * t + ph_x_);
+    ref_y_[3] = -r_y_ * fr_y_ * fr_y_ * fr_y_ * std::cos(fr_y_ * t + ph_y_);
+    ref_z_[3] = -r_z_ * fr_z_ * fr_z_ * fr_z_ * std::cos(fr_z_ * t + ph_z_);
+    ref_x_[4] = r_x_ * fr_x_ * fr_x_ * fr_x_ * fr_x_ * std::sin(fr_x_ * t + ph_x_);
+    ref_y_[4] = r_y_ * fr_y_ * fr_y_ * fr_y_ * fr_y_ * std::sin(fr_y_ * t + ph_y_);
+    ref_z_[4] = r_z_ * fr_z_ * fr_z_ * fr_z_ * fr_z_ * std::sin(fr_z_ * t + ph_z_);
+}
+
+void SLSQSF::updateReference(){
     if(mission_enabled_){
         switch(mission_stage_){
             case 0:
@@ -547,6 +921,7 @@ void SLSQSF::updateReference(){
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
+                updateRefStatic(c_x_, c_y_, c_z_);
                 checkMissionStage(10);
                 break;
             case 1:
@@ -554,6 +929,7 @@ void SLSQSF::updateReference(){
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
+                updateRefStatic(c_x_1_, c_y_1_, c_z_1_);
                 checkMissionStage(10);
                 break;
             case 2:
@@ -561,6 +937,7 @@ void SLSQSF::updateReference(){
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
+                updateRefStatic(c_x_2_, c_y_2_, c_z_2_);
                 checkMissionStage(10);
                 break;
             case 3:
@@ -568,13 +945,15 @@ void SLSQSF::updateReference(){
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
+                updateRefStatic(c_x_3_, c_y_3_, c_z_3_);
                 checkMissionStage(10);
                 break;
             case 4:
-                targetPos_ << c_x_, c_y_, c_z_; 
+                targetPos_ << c_x_0_, c_y_0_, c_z_0_; 
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
+                updateRefStatic(c_x_, c_y_, c_z_);
                 checkMissionStage(10);
                 break;
             case 5:
@@ -582,26 +961,35 @@ void SLSQSF::updateReference(){
                 targetRadium_ << r_x_, r_y_, r_z_;
                 targetFrequency_ << fr_x_, fr_y_, fr_z_;
                 targetPhase_ << ph_x_, ph_y_, ph_z_; 
-                this->traj_tracking_enabled_ = true; 
+                traj_tracking_enabled_ = true; 
+                updateRefSinusoidal(this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds());
                 checkMissionStage(20);
                 break;
             default:
-                targetPos_ << pos_x_0_, pos_y_0_, pos_z_0_; 
+                targetPos_ << c_x_0_, c_y_0_, c_z_0_; 
                 targetRadium_ << 0, 0, 0;
                 targetFrequency_ << 0, 0, 0;
                 targetPhase_ << 0, 0, 0;
-                this->traj_tracking_enabled_ = false;
+                traj_tracking_enabled_ = false;
+                updateRefStatic(c_x_0_, c_y_0_, c_z_0_);
                 if(this->get_clock()->now().seconds() - mission_last_called_.seconds() >= 10){
                     RCLCPP_INFO(this->get_logger(),"[exeMission] Mission Accomplished");
                     mission_last_called_ = this->get_clock()->now();
-                    this->mission_initialized_ = false;
+                    mission_initialized_ = false;
                 }
         }
     }
     else {
+        if(!traj_tracking_enabled_) {
+            updateRefStatic(c_x_0_, c_y_0_, c_z_0_);
+        }
+
+        else {
+            updateRefSinusoidal(this->get_clock()->now().seconds());
+        }
         mission_last_called_ = this->get_clock()->now();
         if(mission_stage_ == 5) {
-            this->traj_tracking_enabled_ = false;
+            traj_tracking_enabled_ = false;
         }
         mission_stage_ = 0;
         mission_initialized_ = false;
@@ -621,33 +1009,58 @@ void SLSQSF::checkMissionStage(double mission_time_span) {
 }
 
 void SLSQSF::pubRateCommands(const Eigen::Vector4d &cmd, const Eigen::Vector4d &target_attitude) {
-    // ros2 equivalent
     if(rate_ctrl_enabled_){
         VehicleRatesSetpoint msg;
         msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
-        msg.roll = static_cast<float>(cmd(0));
-        msg.pitch = static_cast<float>(cmd(1));
-        msg.yaw = static_cast<float>(cmd(2));
+        // Convert FLU (ROS2 body) to FRD (px4 body) frame
+        // baselink frame = FLU for ROS2, aircraft frame = FRD for px4
+        Eigen::Vector3d body_rate_flu(cmd(0), cmd(1), cmd(2));  
+        Eigen::Vector3d body_rate_frd = px4_ros_com::frame_transforms::baselink_to_aircraft_body_frame(body_rate_flu);
+        msg.roll  = static_cast<float>(body_rate_frd(0));
+        msg.pitch = static_cast<float>(body_rate_frd(1));
+        msg.yaw   = static_cast<float>(body_rate_frd(2));
         msg.thrust_body[0] = 0.0f;
         msg.thrust_body[1] = 0.0f;
         msg.thrust_body[2] = static_cast<float>(-cmd(3)); 
+
+        // for custom att msg pub
+        AttSP att_msg;
+        att_msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
+        Eigen::Quaterniond target_att_enu(target_attitude(0), target_attitude(1), target_attitude(2), target_attitude(3));
+        Eigen::Quaterniond target_att_ned = px4_ros_com::frame_transforms::ros_to_px4_orientation(target_att_enu);
+        att_msg.q_d[0] = static_cast<float>(target_att_ned.w());
+        att_msg.q_d[1] = static_cast<float>(target_att_ned.x());
+        att_msg.q_d[2] = static_cast<float>(target_att_ned.y());
+        att_msg.q_d[3] = static_cast<float>(target_att_ned.z());
+
         rate_setpoint_publisher_ -> publish(msg);
+        att_sp_pub_ -> publish(att_msg);
     } else {
         VehicleAttitudeSetpoint msg;
         msg.timestamp = this->get_clock()->now().nanoseconds()/1000; 
-        // transform from ENU
+        // transform from ENU to NED
         Eigen::Quaterniond target_att_enu(target_attitude(0), target_attitude(1), target_attitude(2), target_attitude(3));
         Eigen::Quaterniond target_att_ned = px4_ros_com::frame_transforms::ros_to_px4_orientation(target_att_enu);
         msg.q_d[0] = static_cast<float>(target_att_ned.w());
         msg.q_d[1] = static_cast<float>(target_att_ned.x());
         msg.q_d[2] = static_cast<float>(target_att_ned.y());
         msg.q_d[3] = static_cast<float>(target_att_ned.z());
-
         msg.thrust_body[0] = 0.0f;
         msg.thrust_body[1] = 0.0f;
         msg.thrust_body[2] = static_cast<float>(-cmd(3));
+
+        // for custom rate msg pub
+        RateSP rate_msg;
+        rate_msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
+        Eigen::Vector3d body_rate_flu(cmd(0), cmd(1), cmd(2));  
+        Eigen::Vector3d body_rate_frd = px4_ros_com::frame_transforms::baselink_to_aircraft_body_frame(body_rate_flu);
+        rate_msg.roll  = static_cast<float>(body_rate_frd(0));
+        rate_msg.pitch = static_cast<float>(body_rate_frd(1));
+        rate_msg.yaw   = static_cast<float>(body_rate_frd(2));
+
         attitude_setpoint_publisher_ -> publish(msg);
-    }
+        rates_sp_pub_ -> publish(rate_msg);
+    }    
 }
 
 void SLSQSF::debugRateCommands(const Eigen::Vector4d &cmd, const Eigen::Vector4d &target_attitude) {
@@ -682,85 +1095,26 @@ void SLSQSF::computeBodyRateCmd(Eigen::Vector4d &bodyrate_cmd, const Eigen::Vect
     bodyrate_cmd.head(3) = controller_->getDesiredRate();
     double thrust_command = controller_->getDesiredThrust().z();
     bodyrate_cmd(3) = std::max(0.0, std::min(1.0, norm_thrust_const_ * thrust_command + norm_thrust_offset_));  // original, seems normalized to 0-1
-}
-
-Eigen::Vector3d SLSQSF::applyQuasiSlsCtrl(){
-    double target_force_ned[3];
-    double K[10] = {Kpos_x_, Kvel_x_, Kacc_x_, Kjer_x_, Kpos_y_, Kvel_y_, Kacc_y_, Kjer_y_, Kpos_z_, Kvel_z_};
-    double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_}; 
-    double ref[12] = {
-        targetRadium_(1), targetFrequency_(1), targetPos_(1), targetPhase_(1), 
-        targetRadium_(0), targetFrequency_(0), targetPos_(0), targetPhase_(0), // convert to NED for the controller
-        targetRadium_(2), targetFrequency_(2), -targetPos_(2), targetPhase_(2)}; 
-    if(!traj_tracking_enabled_) {
-        for(int i=0; i<12; i++){
-            if((i+2)%4!=0) ref[i]=0; // set all ref to 0 except for the position
-        }
-    }
-    double sls_state_array[12];
-
-    for(int i=0; i<12;i++){
-       sls_state_array[i] = sls_state_.sls_state[i]; 
-    }
-    const double t = this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds(); 
-    QSFGeometricController(sls_state_array, K, param, ref, t, target_force_ned);
-
-    sls_force_.header.stamp = this->get_clock()->now();
-    sls_force_.sls_force[0] = target_force_ned[0];
-    sls_force_.sls_force[1] = target_force_ned[1];
-    sls_force_.sls_force[2] = target_force_ned[2];
-    sls_force_pub_ -> publish(sls_force_);
-
-    Eigen::Vector3d a_des;
-    a_des(0) = target_force_ned[1] / mass_;
-    a_des(1) = target_force_ned[0] / mass_;
-    a_des(2) = -target_force_ned[2] / mass_; // seems back to ENU for a_des
-
-    // a_des(0) = target_force_ned[0] / mass_;
-    // a_des(1) = target_force_ned[1] / mass_;
-    // a_des(2) = target_force_ned[2] / mass_;  // still in NED for a_des
-
-    Eigen::Vector3d a_fb = a_des + gravity_;
-
-    if (a_fb.norm() > max_fb_acc_)
-    a_fb = (max_fb_acc_ / a_fb.norm()) * a_fb; 
-
-    // rotor drag compensation
-    Eigen::Vector3d a_rd;
-    if(drag_comp_enabled_) {
-        a_rd = compensateRotorDrag(t);
-    }
-    else {
-        a_rd = Eigen::Vector3d::Zero();
-    } 
-
-    a_des = a_fb - a_rd - gravity_; // seems from (31)
-    
-    // to NED
-    // Eigen::Vector3d a_des_ned;
-    // a_des_ned(0) = a_des(1);
-    // a_des_ned(1) = a_des(0);
-    // a_des_ned(2) = -a_des(2);
-    // return a_des_ned;
-
-    // this seems to work, but wrong
-    // a_des(1) = a_des(0);
-    // a_des(0) = a_des(1);
-    // a_des(2) = -a_des(2);
-
-    return a_des; 
+    //bodyrate_cmd(3) = std::max(0.0, std::min(1.0, 15.103*thrust_command*thrust_command - 341.92*thrust_command + 1935.9)); //polynominal
+    //RCLCPP_INFO(this->get_logger(), "Thrust command: %f", thrust_command); // for motor curve
 }
 
 Eigen::Vector3d SLSQSF::compensateRotorDrag(double t) {
     bool use_feedback = true;
     // mav vel ref
     Eigen::Vector3d loadVelRDC, loadAccRDC, loadVelFF, loadAccFF, loadVelFB, loadAccFB;
-    loadVelFF(0) = targetRadium_(0) * targetFrequency_(0) * std::cos(targetFrequency_(0) * t + targetPhase_(0));
-    loadVelFF(1) = targetRadium_(1) * targetFrequency_(1) * std::cos(targetFrequency_(1) * t + targetPhase_(1));
-    loadVelFF(2) = targetRadium_(2) * targetFrequency_(2) * std::cos(targetFrequency_(2) * t + targetPhase_(2));
-    loadAccFF(0) = -targetRadium_(0) * std::pow(targetFrequency_(0), 2) * std::sin(targetFrequency_(0) * t + targetPhase_(0));
-    loadAccFF(1) = -targetRadium_(1) * std::pow(targetFrequency_(1), 2) * std::sin(targetFrequency_(1) * t + targetPhase_(1));
-    loadAccFF(2) = -targetRadium_(2) * std::pow(targetFrequency_(2), 2) * std::sin(targetFrequency_(2) * t + targetPhase_(2));
+    // loadVelFF(0) = targetRadium_(0) * targetFrequency_(0) * std::cos(targetFrequency_(0) * t + targetPhase_(0));
+    // loadVelFF(1) = targetRadium_(1) * targetFrequency_(1) * std::cos(targetFrequency_(1) * t + targetPhase_(1));
+    // loadVelFF(2) = targetRadium_(2) * targetFrequency_(2) * std::cos(targetFrequency_(2) * t + targetPhase_(2));
+    // loadAccFF(0) = -targetRadium_(0) * std::pow(targetFrequency_(0), 2) * std::sin(targetFrequency_(0) * t + targetPhase_(0));
+    // loadAccFF(1) = -targetRadium_(1) * std::pow(targetFrequency_(1), 2) * std::sin(targetFrequency_(1) * t + targetPhase_(1));
+    // loadAccFF(2) = -targetRadium_(2) * std::pow(targetFrequency_(2), 2) * std::sin(targetFrequency_(2) * t + targetPhase_(2));
+    loadVelFF(0)  = ref_x_[1];
+    loadVelFF(1)  = ref_y_[1];
+    loadVelFF(2)  = ref_z_[1];
+    loadAccFF(0)  = ref_x_[2];
+    loadAccFF(1)  = ref_y_[2];
+    loadAccFF(2)  = ref_z_[2];
     loadVelFB = loadVel_;
     loadAccFB = loadAcc_;
 
@@ -845,8 +1199,17 @@ void SLSQSF::applyLowPassFilterFiniteDiff(void) {
     const Eigen::Vector4d q_inv = inverse.asDiagonal() * Att_prev_;  
     const Eigen::Vector4d qe = quatMultiplication(q_inv, Att_); 
 
+    if(!use_real_pend_angle_) {
+        loadPos_ = Pos_;
+        loadPos_(2) += -cable_length_;
+    }
+
     if(lpf_enabled_) {
         pendAngle_ = loadPos_ - Pos_;
+        if(use_real_pend_angle_) {
+            pendAngle_ = pend_angle_filter_ -> updateFilter(pendAngle_, diff_t_);
+        }
+        pendAngle_ = pendAngle_ / pendAngle_.norm();
         // >>> Finite Diff
         if(finite_diff_enabled_) {
             sls_state_raw_.sls_state[0] = loadPos_(1);
@@ -871,17 +1234,23 @@ void SLSQSF::applyLowPassFilterFiniteDiff(void) {
                 loadVel_ = load_vel_filter_ -> updateFilter(loadVel_, diff_t_);
                 // >>> loadAcc
                 loadAcc_ = (loadVel_ - loadVel_prev_) / diff_t_;
-                // TODO loadAcc_ = load_acc_filter ->
+                loadAcc_ = load_acc_filter_ -> updateFilter(loadAcc_, diff_t_);
                 // >>> pendRate
-                pendRate_ = pendAngle_.cross(loadVel_ - Vel_);
+                if(use_real_pend_angle_) {
+                    pendRate_ = pendAngle_.cross(loadVel_ - Vel_);
+                    // pendRate_ = pendAngle_.cross((pendAngle_ - pendAngle_prev_) / diff_t_);
+                }
+                else {
+                    pendRate_ = Eigen::Vector3d::Zero();
+                }
                 sls_state_raw_.sls_state[9] = pendRate_(1);
                 sls_state_raw_.sls_state[10] = pendRate_(0);
                 sls_state_raw_.sls_state[11] = -pendRate_(2);
-                // pendRate_ = pendAngle_.cross((pendAngle_ - pendAngle_prev_) / diff_t_);
-                // pendRate_ = pend_rate_filter_ -> updateFilter(pendRate_, diff_t_);
+                pendRate_ = pend_rate_filter_ -> updateFilter(pendRate_, diff_t_);
+
                 // >>> pendAngularAcc
                 pendAngularAcc_ = (pendRate_ - pendRate_prev_) / diff_t_;
-                // TODO pendAngularAcc_ = pend_angular_acc_filter ->
+                pendAngularAcc_ = pend_angular_acc_filter_ -> updateFilter(pendAngularAcc_, diff_t_);
 
 
                 applyIteration();
@@ -903,15 +1272,18 @@ void SLSQSF::applyLowPassFilterFiniteDiff(void) {
             sls_state_raw_.header.stamp = this->get_clock()->now();
             sls_state_raw_pub_->publish(sls_state_raw_); 
 
+            mav_vel_.header.stamp = this->get_clock()->now();
+            mav_vel_.twist.linear.x = Vel_(0);
+            mav_vel_.twist.linear.y = Vel_(1);
+            mav_vel_.twist.linear.z = Vel_(2);
+            mav_vel_pub_->publish(mav_vel_); 
+
         }
 
         else {
             RCLCPP_INFO(this->get_logger(),"Error: Finite Difference Not Enabled when LPF is called!");
         }
 
-        // >>> publish filtered data
-        loadSlsState();
-        sls_state_pub_->publish(sls_state_); 
     }
 
     else { // LPF not enabled
@@ -920,7 +1292,7 @@ void SLSQSF::applyLowPassFilterFiniteDiff(void) {
         pendAngle_ = pendAngle_ / pendAngle_.norm();
 
         if(finite_diff_enabled_) {
-            if(diff_t_ > FD_EPSILON) { //make sure diff_t_ > smallest positive value
+            if(diff_t_ > FD_EPSILON) { 
                 // >>> mavVel
                 Vel_ = (Pos_ - Pos_prev_) / diff_t_;
                 // >>> mavRate
@@ -945,16 +1317,16 @@ void SLSQSF::applyLowPassFilterFiniteDiff(void) {
                 pendRate_ = pendRate_prev_;
                 pendAngularAcc_ = pendAngularAcc_prev_;
             }
-
-            // publish finite difference results
-            loadSlsState();
-            sls_state_pub_ -> publish(sls_state_); 
         }
 
         else {
-            RCLCPP_INFO(this->get_logger(),"Error: Finite Difference Not Enabled when LPF is called!");
+            //RCLCPP_INFO(this->get_logger(),"Error: Finite Difference Not Enabled when LPF is called!");
         }
     }
+
+
+    loadSlsState();
+    sls_state_pub_->publish(sls_state_); 
 }
 
 void SLSQSF::applyIteration(void) {
