@@ -17,17 +17,20 @@ def generate_launch_description():
                 'rate_ctrl_enabled_': True, 
                 'mission_enabled_': False,
                 'use_real_pend_angle_': True,
-                'integrator_enabled_': False,
+                'integrator_enabled_': False, # False
                 'ref_rate_limit_':2.0,
                 'err_pose_limit_horizontal_':5.0,
                 'err_pose_limit_vertical_':5.0,
                 'mavYaw_': 0.0, 
+                'Kint_x_':0.0, #12.0
+                'Kint_y_':0.0, #12.0
+                'Kint_z_':1.0,
                 'Kpos_x_':24.0,
                 'Kpos_y_':24.0,
-                'Kpos_z_':10.0, # 10.0; 10.0(test); 40.0(1); 48.0(2)
+                'Kpos_z_':40.0, # 10.0; 10.0(test); 40.0(1); 48.0(2)
                 'Kvel_x_':50.0,
                 'Kvel_y_':50.0,
-                'Kvel_z_':10.9545, # 10.9545; 3.0(test); 4.0(1); 4.0(2)
+                'Kvel_z_':4.0, # 10.9545; 3.0(test); 4.0(1); 4.0(2)
                 'Kacc_x_':35.0,
                 'Kacc_y_':35.0,
                 'Kacc_z_':0.0,
@@ -53,8 +56,8 @@ def generate_launch_description():
                 'rotorDragD_x_':1.4,
                 'rotorDragD_y_':1.4,
                 'rotorDragD_z_':0.0,
-                'norm_thrust_const_': 0.034436, # 0.034436; 0.0627(test); 0.2125(1); 0.186(2)
-                'norm_thrust_offset_': 0.14344, # 0.14344; -0.346(test); -2.0134(1); -1.6687(2)
+                'norm_thrust_const_': 0.186, # 0.034436; 0.0627(test); 0.2125(1); 0.186(2)
+                'norm_thrust_offset_': -1.6687, # 0.14344; -0.346(test); -2.0134(1); -1.6687(2)
                 'attctrl_tau_':0.1,
                 'c_x_0_':0.0,
                 'c_y_0_':0.0,
@@ -74,3 +77,5 @@ def generate_launch_description():
             }]
         )
     ])
+
+# turn on integrator and set Kint_x_ = 0, Kint_y_ = 0, Kint_z_ = 1 for perfect z tracking

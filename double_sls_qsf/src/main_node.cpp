@@ -27,6 +27,7 @@
 #include "controller_msgs/msg/rate_sp.hpp"
 #include "double_sls_qsf/QSFController.h" // generated MATLAB code
 #include "double_sls_qsf/QSFIntegralController.h" // generated MATLAB code
+#include "double_sls_qsf/QSFGeometricController.h" // generated MATLAB code
 #include "double_sls_qsf/nonlinear_attitude_control.h"
 
 using namespace std::chrono;
@@ -83,8 +84,8 @@ public:
 		Kjer_z_ = this->declare_parameter<double>("Kjer_z_", 0.0); 
 
         // Integrator gains
-        Kint_x_ = this->declare_parameter<double>("Kint_x_", 12);
-        Kint_y_ = this->declare_parameter<double>("Kint_y_", 12);
+        Kint_x_ = this->declare_parameter<double>("Kint_x_", 12); 
+        Kint_y_ = this->declare_parameter<double>("Kint_y_", 12); 
         Kint_z_ = this->declare_parameter<double>("Kint_z_", 1);
         integral_limit_ = this->declare_parameter<double>("integral_limit_", 10);
 
@@ -627,10 +628,7 @@ void SLSQSF::publish_trajectory_setpoint()
 {
 	// this part can be updated dynamically to some algorithm or even by a subscription callback for messages coming from another node
 	TrajectorySetpoint msg{};
-	//msg.position = {0.0, -1.0, -1.0}; // gazebo: x:-1, y:0, z:1
-    //msg.position = {-1.0, 0.0, -1.0}; // gazebo: x:0, y:-1, z:1
-    msg.position = {0.0, 0.0, -1.85};
-	// msg.yaw = 3.14159265358979323846/2; 
+    msg.position = {0.0, 0.0, -1.35};
     msg.yaw = 0.0; 
 	msg.timestamp = this->get_clock()->now().nanoseconds()/1000;
 	trajectory_setpoint_publisher_->publish(msg);
@@ -775,12 +773,12 @@ Eigen::Vector3d SLSQSF::applyQSFIntegralCtrl(void){
     double load_pose[3] = {sls_state_array[0], sls_state_array[1], sls_state_array[2]};
     double load_pose_ref[3] = {ref_x[0], ref_y[0], ref_z[0]};
 
-    RCLCPP_INFO(this->get_logger(), "integral_limit: %f", integral_limit_);
-    RCLCPP_INFO(this->get_logger(), "xi0: %f", xi_[0]);
-    RCLCPP_INFO(this->get_logger(), "xi1: %f", xi_[1]);
-    RCLCPP_INFO(this->get_logger(), "xi2: %f", xi_[2]);
+    // RCLCPP_INFO(this->get_logger(), "integral_limit: %f", integral_limit_);
+    // RCLCPP_INFO(this->get_logger(), "xi0: %f", xi_[0]);
+    // RCLCPP_INFO(this->get_logger(), "xi1: %f", xi_[1]);
+    // RCLCPP_INFO(this->get_logger(), "xi2: %f", xi_[2]);
     for(int i=0; i<3; i++) {
-        RCLCPP_INFO(this->get_logger(), "err: %f", std::abs(load_pose[i] - load_pose_ref[i]));
+        //RCLCPP_INFO(this->get_logger(), "err: %f", std::abs(load_pose[i] - load_pose_ref[i]));
         if(std::abs(xi_[i] + xi_dot[i] * diff_t_) <= integral_limit_){
             xi_[i] +=  xi_dot[i] * diff_t_;
         }
@@ -820,7 +818,6 @@ Eigen::Vector3d SLSQSF::applyQSFCtrl(void){
     const double t = this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds();
     double target_force_ned[3];
     const double K[10] = {Kpos_x_, Kvel_x_, Kacc_x_, Kjer_x_, Kpos_y_, Kvel_y_, Kacc_y_, Kjer_y_, Kpos_z_, Kvel_z_};
-    const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
 
     double sls_state_array[12];
     for(int i=0; i<12;i++){
@@ -836,7 +833,17 @@ Eigen::Vector3d SLSQSF::applyQSFCtrl(void){
         ref_z[i] = -ref_z_[i];
     }
     double xi_dot[3];
-    QSFController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned);  
+    // zichen's
+    // const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
+    // QSFController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned);  
+
+    // nardos's
+    const double Mt = mass_ + load_mass_;
+    const double param[5] = {mass_, load_mass_, Mt, cable_length_, gravity_acc_};
+    double ref[15] = {ref_x[0], ref_x[1], ref_x[2], ref_x[3], ref_x[4], 
+                      ref_y[0], ref_y[1], ref_y[2], ref_y[3], ref_y[4],
+                      ref_z[0], ref_z[1], ref_z[2], ref_z[3], ref_z[4]};
+    QSFGeometricController(sls_state_array, K, param, ref, target_force_ned);
 
     sls_force_.header.stamp = this->get_clock()->now();
     sls_force_.sls_force[0] = target_force_ned[0];
