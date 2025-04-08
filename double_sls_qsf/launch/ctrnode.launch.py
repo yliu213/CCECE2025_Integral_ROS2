@@ -18,6 +18,7 @@ def generate_launch_description():
                 'mission_enabled_': False,
                 'use_real_pend_angle_': True,
                 'integrator_enabled_': False, # False
+                'use_onboard_measurements_':False,
                 'ref_rate_limit_':2.0,
                 'err_pose_limit_horizontal_':5.0,
                 'err_pose_limit_vertical_':5.0,
@@ -42,7 +43,7 @@ def generate_launch_description():
                 'load_mass_':0.25,
                 'c_x_':0.0,
                 'c_y_':0.0,
-                'c_z_':0.5, 
+                'c_z_':1.0, # 0.5
                 'r_x_':1.0, 
                 'r_y_':1.0, 
                 'r_z_':0.0,
@@ -61,19 +62,19 @@ def generate_launch_description():
                 'attctrl_tau_':0.1,
                 'c_x_0_':0.0,
                 'c_y_0_':0.0,
-                'c_z_0_':0.5,
+                'c_z_0_':1.0, #0.5
                 'c_x_1_':0.0,
                 'c_y_1_':0.0,
-                'c_z_1_':0.5,
-                'c_x_2_':1.0,
+                'c_z_1_':1.0, #0.5
+                'c_x_2_':1.5, #1.0
                 'c_y_2_':0.0,
-                'c_z_2_':0.5,
+                'c_z_2_':1.0, #0.5
                 'c_x_3_':0.0,
-                'c_y_3_':1.0,
-                'c_z_3_':0.5,
+                'c_y_3_':1.5, #1.0
+                'c_z_3_':1.0, #0.5
                 'pos_x_0_':0.0,
                 'pos_y_0_':0.0,
-                'pos_z_0_':1.35, 
+                'pos_z_0_':1.85, #1.35
             }]
         )
     ])

@@ -7,6 +7,7 @@
 #include <px4_msgs/msg/vehicle_rates_setpoint.hpp> // body rate setpoint
 #include <px4_msgs/msg/vehicle_thrust_setpoint.hpp> // thrust setpoint
 #include "px4_ros_com/frame_transforms.h" // for frame transforms
+#include <px4_msgs/msg/vehicle_odometry.hpp> // for vehicle odometry
 
 // ros2 std lib include
 #include <rclcpp/rclcpp.hpp> // ROS2 C++ client library
@@ -28,6 +29,7 @@
 #include "double_sls_qsf/QSFController.h" // generated MATLAB code
 #include "double_sls_qsf/QSFIntegralController.h" // generated MATLAB code
 #include "double_sls_qsf/QSFGeometricController.h" // generated MATLAB code
+#include "double_sls_qsf/QSFGeometricIntController.h" // generated MATLAB code
 #include "double_sls_qsf/nonlinear_attitude_control.h"
 
 using namespace std::chrono;
@@ -57,6 +59,7 @@ public:
         rate_ctrl_enabled_ = this->declare_parameter<bool>("rate_ctrl_enabled_", true);
         mission_enabled_ = this->declare_parameter<bool>("mission_enabled_", false);
         integrator_enabled_ = this->declare_parameter<bool>("integrator_enabled_", false);
+        use_onboard_measurements_ = this->declare_parameter<bool>("use_onboard_measurements_", false);
 
 		// Physical Parameters
 		mass_ = this->declare_parameter<double>("mass_", 1.56);
@@ -195,6 +198,7 @@ public:
 
 		// subscribers
 		gazebo_link_state_sub_ = this->create_subscription<gazebo_msgs::msg::LinkStates>("/gazebo/link_states",1000,std::bind(&SLSQSF::gazeboLinkStateCb, this, _1));
+        odom_sub_ = this->create_subscription<VehicleOdometry>("/fmu/out/vehicle_odometry", rclcpp::SensorDataQoS(), std::bind(&SLSQSF::odomCb, this, _1));
 
 		offboard_setpoint_counter_ = 0;
 		Pos_ << 0.0, 0.0, 0.0; // current position
@@ -307,6 +311,9 @@ public:
                 } else if (param.get_name() == "integrator_enabled_"){
                     integrator_enabled_ = param.as_bool();
                     RCLCPP_INFO(this->get_logger(), "Param changed: integrator_enabled_=%s", integrator_enabled_ ? "true" : "false");
+                } else if (param.get_name() == "use_onboard_measurements_"){
+                    use_onboard_measurements_ = param.as_bool();
+                    RCLCPP_INFO(this->get_logger(), "Param changed: use_onboard_measurements_=%s", use_onboard_measurements_ ? "true" : "false");
                 } else if (param.get_name() == "Kint_x_"){
                     Kint_x_ = param.as_double();
                     RCLCPP_INFO(this->get_logger(), "Param changed: Kint_x_=%f", Kint_x_);
@@ -464,6 +471,7 @@ private:
 
 	// subscribers
 	rclcpp::Subscription<gazebo_msgs::msg::LinkStates>::SharedPtr gazebo_link_state_sub_;
+    rclcpp::Subscription<VehicleOdometry>::SharedPtr odom_sub_;
 
 	// time related
 	rclcpp::TimerBase::SharedPtr timer_;
@@ -503,6 +511,7 @@ private:
     bool mission_initialized_ = false;
     bool use_real_pend_angle_;
     bool integrator_enabled_ = false;
+    bool use_onboard_measurements_ = false;
 
 	// ints
 	uint64_t offboard_setpoint_counter_;
@@ -595,6 +604,7 @@ private:
     void clipBodyRateCmd(Eigen::Vector4d &bodyrate_cmd);
     void updateRefStatic(double x, double y, double z);
     void updateRefSinusoidal(double t);
+    void odomCb(const VehicleOdometry::SharedPtr msg);
 };
 
 void SLSQSF::arm()
@@ -675,7 +685,7 @@ void SLSQSF::gazeboLinkStateCb(const gazebo_msgs::msg::LinkStates::SharedPtr msg
         RCLCPP_INFO(this->get_logger(), "[gazeboLinkStateCb] Matching Complete");
     }
 
-    if(gazebo_link_name_matched_) {
+    if(gazebo_link_name_matched_ && !use_onboard_measurements_) {
         /* Get Gazebo Link States*/
         // >>> Pose
         // Drone
@@ -703,6 +713,41 @@ void SLSQSF::gazeboLinkStateCb(const gazebo_msgs::msg::LinkStates::SharedPtr msg
 
         applyLowPassFilterFiniteDiff();
         exeControl(); 
+    } else {
+        // RCLCPP_INFO(this->get_logger(), "Pos_=%f, %f, %f", Pos_(0), Pos_(1), Pos_(2));
+        Pos_ = toEigen(msg -> pose[drone_link_index_].position);
+        Vel_ = toEigen(msg -> twist[drone_link_index_].linear);
+
+        // the load and pendulum pos, vel are still from gazebo
+        loadPos_ = toEigen(msg -> pose[10].position);
+        pendAngle_ = loadPos_ - Pos_;
+        pendAngle_ = pendAngle_ / pendAngle_.norm();
+        loadVel_ = toEigen(msg -> twist[10].linear);
+        pendRate_ = pendAngle_.cross(loadVel_ - Vel_);
+
+        diff_t_ = this->get_clock()->now().seconds() - gazebo_last_called_.seconds();
+        gazebo_last_called_ = this->get_clock()->now();
+
+        applyLowPassFilterFiniteDiff();
+        exeControl(); 
+    }
+}
+
+void SLSQSF::odomCb(const VehicleOdometry::SharedPtr msg) {
+    if (use_onboard_measurements_) {
+        // Pos_ << msg->position[1], msg->position[0], -(msg->position[2]); // to ENU
+        // RCLCPP_INFO(this->get_logger(), "Pos_=%f, %f, %f", Pos_(0), Pos_(1), Pos_(2));
+        // Vel_ << msg->velocity[1], msg->velocity[0], -(msg->velocity[2]); // to ENU
+
+        Eigen::Vector3d rate_frd(msg->angular_velocity[0], msg->angular_velocity[1], msg->angular_velocity[2]);
+        Rate_ = px4_ros_com::frame_transforms::aircraft_to_baselink_body_frame(rate_frd);
+
+        Eigen::Quaterniond q_ned(msg->q[0], msg->q[1], msg->q[2], msg->q[3]);
+        Eigen::Quaterniond q_enu = px4_ros_com::frame_transforms::px4_to_ros_orientation(q_ned);
+        Att_(0) = q_enu.w();
+        Att_(1) = q_enu.x();
+        Att_(2) = q_enu.y();
+        Att_(3) = q_enu.z();
     }
 }
 
@@ -749,7 +794,6 @@ Eigen::Vector3d SLSQSF::applyQSFIntegralCtrl(void){
     const double t = this->get_clock()->now().seconds() - traj_tracking_last_called_.seconds();
     double target_force_ned[3];
     const double K[13] = {Kint_x_, Kpos_x_, Kvel_x_, Kacc_x_, Kjer_x_, Kint_y_, Kpos_y_, Kvel_y_, Kacc_y_, Kjer_y_, Kint_z_, Kpos_z_, Kvel_z_};
-    const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
 
     double sls_state_array[15];
     for(int i=0; i<12;i++){
@@ -768,7 +812,19 @@ Eigen::Vector3d SLSQSF::applyQSFIntegralCtrl(void){
         ref_z[i] = -ref_z_[i];
     }
     double xi_dot[3];
-    QSFIntegralController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned, xi_dot);
+
+    // zichen's
+    // const double param[4] = {load_mass_, mass_, cable_length_, gravity_acc_};
+    // QSFIntegralController(sls_state_array, K, param, ref_x, ref_y, ref_z, target_force_ned, xi_dot); // xi_dot = xp - ref
+
+    // add integral, modified from nardos's QSFGeometricController
+    const double Mt = mass_ + load_mass_;
+    const double param[5] = {mass_, load_mass_, Mt, cable_length_, gravity_acc_};
+    double ref[15] = {ref_x[0], ref_x[1], ref_x[2], ref_x[3], ref_x[4], 
+                      ref_y[0], ref_y[1], ref_y[2], ref_y[3], ref_y[4],
+                      ref_z[0], ref_z[1], ref_z[2], ref_z[3], ref_z[4]};
+    QSFGeometricIntController(sls_state_array, K, param, ref, target_force_ned, xi_dot);
+
 
     double load_pose[3] = {sls_state_array[0], sls_state_array[1], sls_state_array[2]};
     double load_pose_ref[3] = {ref_x[0], ref_y[0], ref_z[0]};
@@ -1026,6 +1082,13 @@ void SLSQSF::pubRateCommands(const Eigen::Vector4d &cmd, const Eigen::Vector4d &
         msg.roll  = static_cast<float>(body_rate_frd(0));
         msg.pitch = static_cast<float>(body_rate_frd(1));
         msg.yaw   = static_cast<float>(body_rate_frd(2));
+
+        // ???
+        // Eigen::Vector3d thrust_flu(0.0, 0.0, cmd(3));
+        // Eigen::Vector3d thrust_frd = px4_ros_com::frame_transforms::baselink_to_aircraft_body_frame(thrust_flu);
+        // msg.thrust_body[0] = thrust_frd(0);
+        // msg.thrust_body[1] = thrust_frd(1);
+        // msg.thrust_body[2] = thrust_frd(2);
         msg.thrust_body[0] = 0.0f;
         msg.thrust_body[1] = 0.0f;
         msg.thrust_body[2] = static_cast<float>(-cmd(3)); 

@@ -24,17 +24,19 @@ add_executable(sls_qsf
   # src/QSFController/rt_nonfinite.cpp
   # src/QSFController/rtGetInf.cpp
   # src/QSFController/rtGetNaN.cpp
+  # src/QSFIntegralController/QSFIntegralController.cpp
 
   # for MATLAB generated code, nardos's
   src/QSFGeometricController/QSFGeometricController.cpp
   src/QSFGeometricController/rt_nonfinite.cpp
   src/QSFGeometricController/rtGetInf.cpp
   src/QSFGeometricController/rtGetNaN.cpp
+  src/QSFGeometricIntController/QSFGeometricIntController.cpp
 
-  src/QSFIntegralController/QSFIntegralController.cpp
   # for inner loop controller
   src/nonlinear_attitude_control.cpp
 )
+
 ament_target_dependencies(sls_qsf 
   rclcpp 
   px4_msgs 
