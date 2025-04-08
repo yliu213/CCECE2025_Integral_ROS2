@@ -35,6 +35,13 @@ sudo aptitude install gazebo libgazebo11 libgazebo-dev
 make px4_sitl_default gazebo-classic
 ```
 
+Install Cyclone DDS:
+```
+sudo apt install ros-humble-rmw-cyclonedds-cpp
+source /opt/ros/humble/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
+```
+
 ### 2. Install QGroundControl
 Setup mirror network in your computer as follows:
 
@@ -82,6 +89,7 @@ Then install QGroundControl on windows: https://docs.px4.io/main/en/dev_setup/de
 ### 3. Install ROS2 Humble  
 Install ROS2 humble
 ```
+cd
 sudo apt update && sudo apt install locales
 sudo locale-gen en_US en_US.UTF-8
 sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
@@ -109,101 +117,67 @@ sudo apt update
 sudo apt install ros-humble-gazebo-ros-pkgs
 ```
 
-### 4. Install the project
+### 4. Install Micro XRCE-DDS Agent & Client
+Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble
+
+### 5. Install the project
+Here, assume you don't have a workspace
 ```
-cd catkin_ws/src  
-git clone https://github.com/ANCL/ECE664_2025.git 
+mkdir -p ros2_ws/src
+cd ros2_ws/src  
+git clone https://github.com/yliu213/CCECE2025_Integral_ROS2.git --recursive
 cd ..
-catkin build
-source devel/setup.bash  # source the workspace
-```
-### Troubleshooting
-
-- **Authentication Issues**:  
-  If you encounter errors during cloning (e.g., password authentication), generate a [GitHub Personal Access Token](https://github.com/settings/tokens) and use it in place of your password when prompted.
-
-- **Build Errors**:  
-  If there are errors related to missing headers or dependencies in the `mrotor_controller` folder:
-  1. Open and add the following in `package.xml`:
-     ```xml
-     <exec_depend>controller_msgs</exec_depend>
-     ```
-
-  2. Open and edit `CMakeLists.txt`:
-     - Add `controller_msgs` in the `find_package()` section:
-       ```cmake
-       find_package(catkin REQUIRED COMPONENTS controller_msgs)
-       ```
-     - Add `controller_msgs` to the `catkin_package()` section:
-       ```cmake
-       catkin_package(CATKIN_DEPENDS controller_msgs)
-       ```
-
-  After making these changes, rebuild the workspace:
-  ```bash
-  cd catkin_ws
-  catkin build
-  source devel/setup.bash
-
-### 5. Modify parameters
-```
-code ~/PX4-Autopilot/build/px4_sitl_default/etc/init.d/airframes/4016_holybro_px4vision
-```
-Find and comment the following:
-```
-param set-default SYS_USE_IO 0
-param set-default MAV_0_CONFIG 101
-param set-default MAV_1_CONFIG 102
-param set-default SER_TEL1_BAUD 921600
-param set-default MPC_Z_TRAJ_P 0.3
-param set-default SENS_CM8JL65_CFG 104
-param set-default SENS_EN_PMW3901 1
-param set-default BAT1_A_PER_V 36.364
-param set-default BAT1_V_DIV 18.182
-```
-Save the changes. Then rebuild PX4
-```
-cd ~/PX4-Autopilot
-make px4_sitl_default
+colcon build
+source install/setup.bash  # source the workspace
 ```
 
-### 6. Modify /.bashrc
+### 6. Modify empty.world
 ```
+code ~/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/empty.world
+```
+Add the following inside <world> block:
+```
+<plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+</plugin>
+```
+
+### 7. Modify /.bashrc
+```
+cd
 code ~/.bashrc
 ```  
-add following contents:
+add following contents in the end, replace <user> by your user name:
 ```
-source /opt/ros/noetic/setup.bash
-source ~/catkin_ws/devel/setup.bash
-source ~/PX4-Autopilot/Tools/setup_gazebo.bash ~/PX4-Autopilot ~/PX4-Autopilot/build/px4_sitl_default
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/<user>/ros2_ws/src/setup/models
+export GAZEBO_PLUGIN_PATH=~/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic:$GAZEBO_PLUGIN_PATH:
+export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/<user>/ros2_ws/src/setup/models
+```
 
-export ROS_PACKAGE_PATH=$ROS_PACKAGE_PATH:~/PX4-Autopilot
-export ROS_PACKAGE_PATH=$ROS_PACKAGE_PATH:~/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic
-export GAZEBO_PLUGIN_PATH=$GAZEBO_PLUGIN_PATH:/usr/lib/x86_64-linux-gnu/gazebo-11/plugins
-export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:~/catkin_ws/src/ECE664_2025/controller_sitl_gazebo/models
-```
 ## Run SLS SITL
 ### 1. Launch SITL environment
+In a new terminal:
 ```
-# in a new terminal
-roslaunch controller_sitl_gazebo sitl_sls_empty_world.launch
+ros2 launch double_sls_qsf init.launch.py
 ```  
-Note: If the vehicle model is not generated propeller in the GUI, try closing the terminal and launch again.
+And click the start icon in gazebo
 ### 2. Run QGroundControl
 
 ### 3. Launch SITL controller launch script
+In a new terminal:
 ```
-# in a new terminal
-roslaunch mrotor_controller drone1_sls_controller.launch
+ros2 launch double_sls_qsf ctrnode.launch.py
 ```
 ### 4. Open Dynamic Reconfigure GUI
+In a new terminal:
 ```
-# in a new terminal
-rosrun rqt_reconfigure rqt_reconfigure
+ros2 run rqt_reconfigure rqt_reconfigure
 ```
 * Move sliders to change gains and references
 * Check tick-box "mission_enabled" to start set-point and trajectory tracking mission
-* Based on PX4Vision vehicle default settings, increase MC_ROLLRATE_D and MC_PITCHRATE_D to 0.004~0.008 for better transient response.
-## Plot the Data
-Plot the data you obtained using main_ccece25.m file in `MATLAB_Plot` folder by changing the name of the bag file in:
-![image](https://github.com/user-attachments/assets/7584aca0-0345-45d9-8889-cc5074fbc41a)
+* Based on PX4Vision vehicle default settings, you may want to decrease MC_ROLLRATE_D and MC_PITCHRATE_D and increase their K and I gains for better response.
