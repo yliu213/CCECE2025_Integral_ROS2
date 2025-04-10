@@ -141,6 +141,7 @@ Add the following inside <world> block:
       <ros>
         <namespace>/gazebo</namespace>
       </ros>
+      <update_rate>250</update_rate>
 </plugin>
 ```
 
