@@ -121,7 +121,8 @@ sudo apt install ros-humble-gazebo-ros-pkgs
 ```
 
 ### 4. Install Micro XRCE-DDS Agent & Client
-Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble
+Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble 
+
 If encounter erros, see: https://github.com/PX4/PX4-Autopilot/issues/24477
 
 ### 5. Install the project
