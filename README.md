@@ -126,7 +126,7 @@ Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble
 If encounter erros, see: https://github.com/PX4/PX4-Autopilot/issues/24477
 
 ### 5. Install the project
-Here, assume you don't have a workspace
+Here, assume you don't have a workspace:
 ```
 mkdir -p ros2_ws/src
 cd ros2_ws/src  
@@ -134,6 +134,16 @@ git clone https://github.com/yliu213/CCECE2025_Integral_ROS2.git --recursive
 cd ..
 colcon build
 source install/setup.bash  # source the workspace
+```
+If build error about px4_ros_com and px4_msgs, do:
+```
+mkdir -p ros2_ws/src
+cd ros2_ws/src  
+rm -rf px4_ros_com px4_msgs
+git clone https://github.com/PX4/px4_msgs.git --recursive
+git clone https://github.com/PX4/px4_ros_com.git --recursive
+cd ..
+colcon build
 ```
 
 ### 6. Modify empty.world
