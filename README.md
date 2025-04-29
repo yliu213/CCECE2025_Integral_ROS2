@@ -37,14 +37,6 @@ cd ~/PX4-Autopilot
 make px4_sitl_default gazebo-classic
 ```
 
-Install Cyclone DDS:
-```
-cd ~
-sudo apt install ros-humble-rmw-cyclonedds-cpp
-source /opt/ros/humble/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
-```
-
 ### 2. Install QGroundControl
 Setup mirror network in your computer as follows:
 
@@ -112,6 +104,14 @@ The above command is from https://docs.px4.io/main/en/ros2/user_guide.html#humbl
 Some python dependcies might be needed:
 ```
 pip install --user -U empy==3.3.4 pyros-genmsg setuptools
+```
+
+Install Cyclone DDS:
+```
+cd ~
+sudo apt install ros-humble-rmw-cyclonedds-cpp
+source /opt/ros/humble/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
 ```
 
 Then install gazebo-ros package:
