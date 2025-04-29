@@ -29,9 +29,11 @@ make px4_sitl gz_x500
 
 Since our SITL is done in gazebo-classic, so do:
 ```
+cd ~
 sudo apt remove gz-garden
 sudo apt install aptitude
 sudo aptitude install gazebo libgazebo11 libgazebo-dev
+cd ~/PX4-Autopilot
 make px4_sitl_default gazebo-classic
 ```
 
