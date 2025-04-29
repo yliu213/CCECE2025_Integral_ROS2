@@ -39,6 +39,7 @@ make px4_sitl_default gazebo-classic
 
 Install Cyclone DDS:
 ```
+cd ~
 sudo apt install ros-humble-rmw-cyclonedds-cpp
 source /opt/ros/humble/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
