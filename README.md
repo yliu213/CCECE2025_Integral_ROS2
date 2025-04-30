@@ -105,14 +105,6 @@ Some python dependcies might be needed:
 pip install --user -U empy==3.3.4 pyros-genmsg setuptools
 ```
 
-Install Cyclone DDS:
-```
-cd ~
-sudo apt install ros-humble-rmw-cyclonedds-cpp
-source /opt/ros/humble/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 
-```
-
 Then install gazebo-ros package:
 ```
 sudo apt update
@@ -168,7 +160,6 @@ add following contents in the end, replace <user> by your user name:
 ```
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/<user>/ros2_ws/src/setup/models
 export GAZEBO_PLUGIN_PATH=~/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic:$GAZEBO_PLUGIN_PATH:
 export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/<user>/ros2_ws/src/setup/models
