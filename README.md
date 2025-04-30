@@ -116,7 +116,21 @@ Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble
 
 If encounter erros, see: https://github.com/PX4/PX4-Autopilot/issues/24477
 
-### 5. Install the project
+### 5. Modify /.bashrc
+```
+cd
+code ~/.bashrc
+```  
+add following contents in the end, replace <user> by your user name:
+```
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/setup.bash
+export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/<user>/ros2_ws/src/setup/models
+export GAZEBO_PLUGIN_PATH=~/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic:$GAZEBO_PLUGIN_PATH:
+export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/<user>/ros2_ws/src/setup/models
+```
+
+### 6. Install the project
 Here, assume you don't have a workspace:
 ```
 mkdir -p ros2_ws/src
@@ -137,7 +151,7 @@ cd ..
 colcon build
 ```
 
-### 6. Modify empty.world
+### 7. Modify empty.world
 ```
 code ~/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/empty.world
 ```
@@ -149,20 +163,6 @@ Add the following inside <world> block:
       </ros>
       <update_rate>250</update_rate>
 </plugin>
-```
-
-### 7. Modify /.bashrc
-```
-cd
-code ~/.bashrc
-```  
-add following contents in the end, replace <user> by your user name:
-```
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/<user>/ros2_ws/src/setup/models
-export GAZEBO_PLUGIN_PATH=~/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic:$GAZEBO_PLUGIN_PATH:
-export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/<user>/ros2_ws/src/setup/models
 ```
 
 ## Run SLS SITL
