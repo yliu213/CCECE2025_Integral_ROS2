@@ -22,12 +22,10 @@ git submodule update
 cd ~
 bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
 cd ~/PX4-Autopilot
-pip uninstall empy
-pip install empy==3.3.4
 make px4_sitl gz_x500
 ```
 
-Since our SITL is done in gazebo-classic, so do:
+Since the SITL is done in gazebo-classic, so do:
 ```
 cd ~/PX4-Autopilot
 sudo apt remove gz-garden
@@ -116,7 +114,28 @@ Follow the guide at: https://docs.px4.io/main/en/ros2/user_guide.html#humble
 
 If encounter erros, see: https://github.com/PX4/PX4-Autopilot/issues/24477
 
-### 5. Modify /.bashrc
+### 5. Install the project
+Here, assume you don't have a workspace:
+```
+mkdir -p ros2_ws/src
+cd ros2_ws/src  
+git clone https://github.com/yliu213/CCECE2025_Integral_ROS2.git
+cd ..
+colcon build
+source install/setup.bash  # source the workspace
+```
+If build error about px4_ros_com and px4_msgs, do:
+```
+mkdir -p ros2_ws/src
+cd ros2_ws/src  
+rm -rf px4_ros_com px4_msgs
+git clone https://github.com/PX4/px4_msgs.git 
+git clone https://github.com/PX4/px4_ros_com.git 
+cd ..
+colcon build
+```
+
+### 6. Modify /.bashrc
 ```
 cd
 code ~/.bashrc
@@ -128,27 +147,6 @@ source ~/ros2_ws/install/setup.bash
 export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/home/<user>/ros2_ws/src/setup/models
 export GAZEBO_PLUGIN_PATH=~/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic:$GAZEBO_PLUGIN_PATH:
 export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/<user>/ros2_ws/src/setup/models
-```
-
-### 6. Install the project
-Here, assume you don't have a workspace:
-```
-mkdir -p ros2_ws/src
-cd ros2_ws/src  
-git clone https://github.com/yliu213/CCECE2025_Integral_ROS2.git --recursive
-cd ..
-colcon build
-source install/setup.bash  # source the workspace
-```
-If build error about px4_ros_com and px4_msgs, do:
-```
-mkdir -p ros2_ws/src
-cd ros2_ws/src  
-rm -rf px4_ros_com px4_msgs
-git clone https://github.com/PX4/px4_msgs.git --recursive
-git clone https://github.com/PX4/px4_ros_com.git --recursive
-cd ..
-colcon build
 ```
 
 ### 7. Modify empty.world
