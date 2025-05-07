@@ -183,6 +183,5 @@ In a new terminal:
 ```
 ros2 run rqt_reconfigure rqt_reconfigure
 ```
-* Move sliders to change gains and references
 * Check tick-box "mission_enabled" to start set-point and trajectory tracking mission
 * Based on PX4Vision vehicle default settings, you may want to decrease MC_ROLLRATE_D and MC_PITCHRATE_D and increase their K and I gains for better response.
